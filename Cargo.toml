@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1.52"
+color-eyre = "0.5.11"
+eyre = "0.6.5"
+serenity = "0.10.9"
+tokio = { version = "1.15.0", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1.29"
+tracing-subscriber = "0.3.4"
