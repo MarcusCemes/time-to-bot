@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1.52"
+serenity = "0.10.9"
+tokio = { version = "1.15.0", features = ["rt", "macros"] }
