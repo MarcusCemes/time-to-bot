@@ -206,10 +206,6 @@ async fn register_commands(ctx: &Context) {
 }
 
 fn create_commands(commands: &mut CreateApplicationCommands) -> &mut CreateApplicationCommands {
-    use interactions::application_command::ApplicationCommandOptionType::{
-        String as StringType, User as UserType,
-    };
-
     commands
         .create_application_command(|command| {
             command
@@ -217,50 +213,6 @@ fn create_commands(commands: &mut CreateApplicationCommands) -> &mut CreateAppli
                 .description("A call to gather all server members for some games")
         })
         .create_application_command(|command| command.name("ping").description("A ping command"))
-        .create_application_command(|command| {
-            command
-                .name("id")
-                .description("Get a user id")
-                .create_option(|option| {
-                    option
-                        .name("id")
-                        .description("The user to lookup")
-                        .kind(UserType)
-                        .required(true)
-                })
-        })
-        .create_application_command(|command| {
-            command
-                .name("welcome")
-                .description("Welcome a user")
-                .create_option(|option| {
-                    option
-                        .name("user")
-                        .description("The user to welcome")
-                        .kind(UserType)
-                        .required(true)
-                })
-                .create_option(|option| {
-                    option
-                        .name("message")
-                        .description("The message to send")
-                        .kind(StringType)
-                        .required(true)
-                        .add_string_choice(
-                            "Welcome to our cool server! Ask me if you need help",
-                            "pizza",
-                        )
-                        .add_string_choice("Hey, do you want a coffee?", "coffee")
-                        .add_string_choice(
-                            "Welcome to the club, you're now a good person. Well, I hope.",
-                            "club",
-                        )
-                        .add_string_choice(
-                            "I hope that you brought a controller to play together!",
-                            "game",
-                        )
-                })
-        })
 }
 
 #[tokio::main]
