@@ -30,7 +30,7 @@ struct GatherSequence<'a> {
 enum GatherAction {
     Sleep(u64),
     Say(&'static str),
-    WithEmoji(&'static str, char),
+    AddReaction(char),
 }
 
 impl GatherSequence<'_> {
@@ -43,26 +43,30 @@ impl GatherSequence<'_> {
             Sleep(1000),
             Say("What's going on here?"),
             Sleep(1000),
-            WithEmoji("Why is @everyone asleep!?!?", '😴'),
+            Say("Why is @everyone asleep!?!?"),
+            Sleep(500),
+            AddReaction('😴'),
             Sleep(2000),
             Say("Come on come one! Wake up!"),
             Sleep(500),
             Say("It's Time to Game!"),
         ];
 
+        let mut last_message = None;
+
         for action in sequence {
             match action {
                 Sleep(millis) => Self::sleep_millis(millis).await,
                 Say(msg) => {
-                    self.say(msg).await?;
+                    last_message = Some(self.say(msg).await?);
                 }
-                WithEmoji(msg, emoji) => {
-                    let message = self.say(msg).await?;
-                    Self::sleep_millis(500).await;
-                    message
-                        .react(&self.http, emoji)
-                        .await
-                        .map_err(|_| "Failed to react to message")?;
+                AddReaction(emoji) => {
+                    if let Some(message) = &last_message {
+                        message
+                            .react(&self.http, emoji)
+                            .await
+                            .map_err(|_| "Failed to react to message")?;
+                    }
                 }
             }
         }
