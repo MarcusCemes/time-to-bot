@@ -2,7 +2,13 @@ use std::{fmt::Display, sync::Arc, time::Duration};
 
 use serenity::{
     http::Http,
-    model::{interactions::application_command::ApplicationCommandInteraction, prelude::*},
+    model::{
+        application::interaction::{
+            application_command::ApplicationCommandInteraction, Interaction,
+            InteractionResponseType,
+        },
+        prelude::*,
+    },
     prelude::*,
 };
 use tokio::time::sleep;
@@ -90,7 +96,7 @@ async fn start_gathering(http: &Arc<Http>, command: &ApplicationCommandInteracti
     match try_channel {
         Ok(channel) => {
             let interaction_response =
-                format!("OK {}, let's get this party started!", command.user.name);
+                format!("Okay {}, let's get this party started!", command.user.name);
 
             respond_to_interaction(http, command, interaction_response).await;
 
@@ -136,13 +142,14 @@ async fn say_with_typing(
 ) -> Result<Message, &'static str> {
     let try_typing = channel.clone().start_typing(http);
     tokio::time::sleep(delay).await;
+
     let message = channel
         .say(http, content)
         .await
         .map_err(|_| "Unable to send message in channel")?;
 
     if let Ok(typing) = try_typing {
-        typing.stop();
+        typing.stop().take();
     }
 
     Ok(message)

@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use serenity::{model::prelude::*, prelude::*};
+use serenity::{
+    model::{application::interaction::Interaction, prelude::*},
+    prelude::*,
+};
 
 pub mod interaction_create;
 pub mod ready;

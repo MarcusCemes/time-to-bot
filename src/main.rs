@@ -3,12 +3,12 @@ mod events;
 use std::{collections::HashSet, env};
 
 use serenity::{
-    client::bridge::gateway::GatewayIntents, constants::GATEWAY_VERSION,
-    framework::StandardFramework, http::Http, model::prelude::*, prelude::*,
+    constants::GATEWAY_VERSION, framework::StandardFramework, http::Http, model::prelude::*,
+    prelude::*,
 };
 use tracing::log::*;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     init();
 
@@ -54,7 +54,7 @@ struct BotInfo {
 }
 
 async fn get_bot_info(token: &str) -> BotInfo {
-    let http = Http::new_with_token(token);
+    let http = Http::new(token);
 
     match http.get_current_application_info().await {
         Ok(info) => {
@@ -84,15 +84,10 @@ fn create_framework(bot_info: BotInfo) -> StandardFramework {
 }
 
 async fn create_client(config: &Config, framework: StandardFramework) -> Client {
-    Client::builder(&config.token)
+    Client::builder(&config.token, GatewayIntents::empty())
         .application_id(config.application_id)
-        .intents(gateway_intents())
         .event_handler(events::Handler)
         .framework(framework)
         .await
         .expect("Error while creating client")
-}
-
-const fn gateway_intents() -> GatewayIntents {
-    GatewayIntents::empty()
 }
