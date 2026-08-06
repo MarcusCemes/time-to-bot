@@ -1,9 +1,10 @@
-mod events;
 
 use std::env;
 
 use serenity::{all::GatewayIntents, client::Client};
 use tracing::log::*;
+
+mod events;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
