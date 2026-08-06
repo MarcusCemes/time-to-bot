@@ -1,7 +1,5 @@
 use async_trait::async_trait;
-use serenity::all::{
-    CommandInteraction, Context, EventHandler, Interaction, Message, Ready,
-};
+use serenity::all::{Context, EventHandler, Interaction, Message, Ready};
 
 pub mod interaction_create;
 pub mod message_create;
@@ -23,6 +21,3 @@ impl EventHandler for Handler {
         ready::ready_handler(ctx, ready).await;
     }
 }
-
-#[allow(unused)]
-fn _type_hint(_: CommandInteraction) {}

@@ -71,7 +71,7 @@ impl GatherSequence<'_> {
     }
 
     async fn say(&self, content: &str) -> Result<serenity::all::Message, &'static str> {
-        let delay = std::time::Duration::from_millis(content.len() as u64 * MS_PER_CHAR);
+        let delay = std::time::Duration::from_millis(content.chars().count() as u64 * MS_PER_CHAR);
         say_with_typing(self.ctx, self.channel, delay, content).await
     }
 
@@ -108,6 +108,10 @@ async fn get_guild_channel(
     ctx: &Context,
     command: &CommandInteraction,
 ) -> Result<GuildChannel, &'static str> {
+    if command.guild_id.is_none() {
+        return Err("This command can only be used in a server channel.");
+    }
+
     if let Some(guild_id) = command.guild_id {
         if let Some(guild) = ctx.cache.guild(guild_id) {
             if let Some(channel) = guild.channels.get(&command.channel_id) {
@@ -131,12 +135,11 @@ async fn say_with_typing(
 
     let message = channel
         .say(&ctx.http, content.to_string())
-        .await
-        .map_err(|_| "Unable to send message in channel")?;
+        .await;
 
     typing.stop();
 
-    Ok(message)
+    message.map_err(|_| "Unable to send message in channel")
 }
 
 async fn respond_to_interaction<C>(
