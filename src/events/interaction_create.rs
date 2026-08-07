@@ -1,18 +1,23 @@
 use serenity::all::{
-    CommandInteraction, Context, CreateInteractionResponse,
-    CreateInteractionResponseMessage, GuildChannel, Interaction,
+    CommandInteraction, Context, CreateInteractionResponse, CreateInteractionResponseMessage,
+    GetMessages, GuildChannel, Interaction,
 };
 use tracing::log::*;
+
+use crate::llm::channel_manager::{ChannelManager, HistoryEntry};
+use crate::llm::turn;
 
 /// Time the bot should take to type one character, used for typing indicators.
 const MS_PER_CHAR: u64 = 100;
 
-#[inline]
 pub async fn handle_interaction_create(ctx: Context, interaction: Interaction) {
     if let Interaction::Command(command) = interaction {
         match command.data.name.as_str() {
             "gather" => start_gathering(&ctx, &command).await,
             "ping" => respond_to_interaction(&ctx, &command, "Hey, I'm alive!").await,
+            "summon" => summon(&ctx, &command).await,
+            "reset" => reset(&ctx, &command).await,
+            "status" => status(&ctx, &command).await,
             cmd => warn!("The command \"{}\" is not implemented", cmd),
         };
     }
@@ -154,6 +159,127 @@ async fn respond_to_interaction<C>(
             &ctx.http,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().content(content.to_string()),
+            ),
+        )
+        .await;
+
+    if let Err(why) = try_respond {
+        error!("Cannot respond to slash command: {}", why);
+    }
+}
+
+/// `/summon` — enter interest with an amusing entrance; the bot acts like it woke up.
+async fn summon(ctx: &Context, command: &CommandInteraction) {
+    let manager = ctx
+        .data
+        .read()
+        .await
+        .get::<ChannelManager>()
+        .cloned()
+        .expect("ChannelManager missing from context");
+
+    let channel_id = command.channel_id;
+
+    // Backfill transcript from Discord if history is empty (Kimi #8 — mention
+    // and summon are symmetric: both get the last 15 min of context).
+    {
+        let state_arc = manager.get_or_create(channel_id).await;
+        let mut state = state_arc.lock().await;
+        if state.history.is_empty() {
+            // Fetch last 50 messages (15 min at typical pace) and push them
+            // oldest→newest so seq order matches.
+            if let Ok(messages) = channel_id
+                .messages(&ctx.http, GetMessages::new().limit(50))
+                .await
+            {
+                for message in messages.iter().rev() {
+                    if message.author.bot {
+                        continue;
+                    }
+                    state.push_message(HistoryEntry {
+                        seq: 0, // assigned by push_message
+                        author: message.author.name.clone(),
+                        content: message.content.clone(),
+                        message_id: message.id,
+                    });
+                }
+            } else {
+                warn!("failed to backfill transcript for {channel_id}");
+            }
+        }
+        // Set interest + summoned flag.
+        state.interest(manager.interest_timeout());
+        state.summoned = true;
+    }
+
+    respond_to_interaction(ctx, command, "You rang?").await;
+
+    // Trigger the LLM turn (single-flight) so the bot speaks.
+    turn::trigger_turn(ctx, manager, channel_id).await;
+}
+
+/// `/reset` — clear the channel's context now (ephemeral confirmation — Kimi #22).
+async fn reset(ctx: &Context, command: &CommandInteraction) {
+    let manager = ctx
+        .data
+        .read()
+        .await
+        .get::<ChannelManager>()
+        .cloned()
+        .expect("ChannelManager missing from context");
+
+    let channel_id = command.channel_id;
+    {
+        let state_arc = manager.get_or_create(channel_id).await;
+        let mut state = state_arc.lock().await;
+        state.clear_context();
+    }
+    respond_to_interaction_ephemeral(ctx, command, "Context cleared.").await;
+}
+
+/// `/status` — debugging: show interest window + history length (ephemeral — Kimi #22).
+async fn status(ctx: &Context, command: &CommandInteraction) {
+    let manager = ctx
+        .data
+        .read()
+        .await
+        .get::<ChannelManager>()
+        .cloned()
+        .expect("ChannelManager missing from context");
+
+    let channel_id = command.channel_id;
+    let (interested, history_len, in_flight, queue_len, generation) = {
+        let state_arc = manager.get_or_create(channel_id).await;
+        let state = state_arc.lock().await;
+        (
+            state.is_interested(),
+            state.history.len(),
+            state.generation_in_flight,
+            state.send_queue.len(),
+            state.generation,
+        )
+    };
+    let msg = format!(
+        "interested: {interested}, history: {history_len} entries, in-flight: {in_flight}, queued: {queue_len}, generation: {generation}"
+    );
+    respond_to_interaction_ephemeral(ctx, command, msg).await;
+}
+
+/// Respond to an interaction with an ephemeral message (only the invoker sees it).
+async fn respond_to_interaction_ephemeral<C>(
+    ctx: &Context,
+    command: &CommandInteraction,
+    content: C,
+) where
+    C: ToString,
+{
+    let try_respond = command
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(content.to_string())
+                    .ephemeral(true),
             ),
         )
         .await;

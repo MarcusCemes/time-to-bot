@@ -1,0 +1,84 @@
+//! Rig agent: builds the OpenRouter client + agent with tools, runs the chat
+//! loop with history, and returns the actions the tools enqueued.
+//!
+//! rig 0.41 split: `Agent` (config) + `AgentRunner` (execution). The runner is
+//! where `tool_context` (injected tool state) and `run()` live. Verified against
+//! rig-agent 0.41 source.
+
+use anyhow::Context as _;
+use rig::client::AgentClientExt;
+use rig::providers::openrouter;
+
+use crate::config::Config;
+use crate::llm::prompt::SYSTEM_PROMPT;
+use crate::llm::tools::{ActionSender, React, SendMessage, SeqSnapshot};
+
+/// The LLM agent for one channel's conversation.
+pub struct LlmAgent {
+    client: openrouter::Client,
+    model: String,
+}
+
+impl LlmAgent {
+    pub fn new(config: &Config) -> Self {
+        let client = if let Some(base_url) = &config.openrouter_base_url {
+            openrouter::Client::builder()
+                .base_url(base_url)
+                .api_key(&config.openrouter_api_key)
+                .build()
+                .expect("Failed to build OpenRouter client")
+        } else {
+            openrouter::Client::new(&config.openrouter_api_key)
+                .expect("Failed to build OpenRouter client")
+        };
+        Self {
+            client,
+            model: config.model.clone(),
+        }
+    }
+
+    /// Run one LLM turn for a channel with the given transcript prompt, tools
+    /// wired to `queue_tx` (actions the model decides) and `seq_snapshot`
+    /// (seq→MessageId). The tools push `Action`s into `queue_tx` during the
+    /// loop; the caller drains the receiver side (executor owns the queue).
+    ///
+    /// Retries transient failures (429/5xx) with exponential backoff (Kimi #24).
+    pub async fn turn(
+        &self,
+        prompt: &str,
+        queue_tx: ActionSender,
+        seq_snapshot: SeqSnapshot,
+    ) -> Result<(), anyhow::Error> {
+        let agent = self
+            .client
+            .agent(&self.model)
+            .preamble(SYSTEM_PROMPT)
+            .tool(SendMessage)
+            .tool(React)
+            .build();
+
+        // Runner holds the injected tool context + runs the loop.
+        let mut context = rig::tool::ToolContext::new();
+        context.insert(queue_tx.clone());
+        context.insert(seq_snapshot.clone());
+
+        // Exponential backoff on transient errors: 200ms, 1s, 3s (Kimi #24).
+        // `AgentRunner::run` consumes the runner, so rebuild it per attempt —
+        // it's just config assembly around the shared `&agent`.
+        let delays_ms = [200, 1000, 3000];
+        let mut last_err = None;
+        for delay in delays_ms {
+            let runner = rig::agent::AgentRunner::from_agent(&agent, prompt)
+                .tool_context(context.clone());
+            match runner.run().await {
+                Ok(_response) => return Ok(()),
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
+        }
+        Err(anyhow::Error::from(last_err.expect("delays non-empty")))
+            .context("LLM chat failed after retries")
+    }
+}
