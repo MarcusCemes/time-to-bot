@@ -34,6 +34,12 @@ impl Drop for TypingGuard {
 /// computed duration, then send (or react), then append the bot's reply to
 /// history. One failed send/reaction logs + continues (Kimi #13) instead of
 /// aborting the burst.
+///
+/// Interest is NOT touched here: the bot stays interested until the 15-min
+/// window lapses. Auto-quieting after the burst was tried and REVERTED — it
+/// made the bot deaf to follow-up messages that don't re-mention it (e.g.
+/// "how u doin?" after "@bot hey"), killing conversational continuity
+/// (smoke test, 2026-08-07).
 pub async fn execute_output(
     http: &std::sync::Arc<serenity::http::Http>,
     channel: ChannelId,
@@ -46,6 +52,7 @@ pub async fn execute_output(
         let mut state = state_arc.lock().await;
         state.drain_queue()
     };
+    info!("executor: draining {} queued output(s) for {channel}", queue.len());
 
     for item in queue {
         // Handle reactions first (no content, short delay).

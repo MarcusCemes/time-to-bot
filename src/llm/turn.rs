@@ -273,20 +273,41 @@ pub async fn llm_turn(
 
     // Execute the actions: route sends to the executor queue, reactions through
     // the executor too (Kimi #16 — delay + cap, no instant spam).
+    //
+    // Dedup (smoke test 2026-08-07): the model sometimes queues the same content
+    // multiple times in one burst, or repeats its own previous line. Suppress
+    // both — a seen-this-turn set, and the bot's last sent message.
+    let mut seen_this_turn = std::collections::HashSet::new();
+    let last_bot = {
+        let state_arc = manager.get_or_create(channel_id).await;
+        let state = state_arc.lock().await;
+        state.last_bot_message()
+    };
     for action in actions {
         match action {
             Action::Send(content) => {
                 // Skip empty content (Kimi round-4 #19 — Discord 400).
-                if content.trim().is_empty() {
+                let trimmed = content.trim().to_string();
+                if trimmed.is_empty() {
                     warn!("skipping empty LLM message");
                     continue;
                 }
+                // Dedup: skip if sent this turn or repeats the bot's last line.
+                if !seen_this_turn.insert(trimmed.clone()) {
+                    info!("dedup: skipping repeated content this turn");
+                    continue;
+                }
+                if last_bot.as_deref() == Some(trimmed.as_str()) {
+                    info!("dedup: skipping repeat of bot's last message");
+                    continue;
+                }
+                info!("LLM queued a message ({} chars)", trimmed.chars().count());
                 manager
                     .get_or_create(channel_id)
                     .await
                     .lock()
                     .await
-                    .enqueue(content);
+                    .enqueue(trimmed);
             }
             Action::React { message_id, emoji } => {
                 // Parse the emoji defensively (Kimi #18 — trust nothing from the LLM).

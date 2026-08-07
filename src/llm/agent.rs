@@ -76,10 +76,26 @@ impl LlmAgent {
         let mut last_err = None;
         for (i, delay) in delays_ms.iter().enumerate() {
             let runner = rig::agent::AgentRunner::from_agent(&agent, prompt)
+                // MaxTurnsError (default max_turns=1) killed the smoke test:
+                // the model's FIRST call is a tool call, so the loop needs
+                // turns for tool round-trips + final text (Kimi #24).
+                .max_turns(4)
                 .tool_context(context.clone());
             match runner.run().await {
                 Ok(_response) => return Ok(()),
                 Err(e) => {
+                    // Empty-response ("Response contained no message or tool
+                    // call") is the model saying "nothing to add" — NOT a
+                    // transient error. Retry once (model hiccup), then treat
+                    // as a graceful quiet, not a failure (smoke-test log).
+                    if is_empty_response(&e) {
+                        if i == 0 {
+                            last_err = Some(e);
+                            continue; // one retry
+                        }
+                        // Second occurrence: quiet, no error.
+                        return Ok(());
+                    }
                     last_err = Some(e);
                     // Don't sleep after the FINAL attempt (Kimi round-4 #8).
                     if i + 1 < delays_ms.len() {
@@ -91,4 +107,17 @@ impl LlmAgent {
         Err(anyhow::Error::from(last_err.expect("delays non-empty")))
             .context("LLM chat failed after retries")
     }
+}
+
+/// True if the error is the "empty response" class (model returned neither
+/// text nor tool call). rig 0.41 surfaces it as `PromptError::CompletionError(
+/// CompletionError::ResponseError("Response contained no message or tool call"))`
+/// (verified in rig-agent completion.rs + rig-core providers). The model
+/// effectively said "nothing to add."
+fn is_empty_response(err: &rig::completion::PromptError) -> bool {
+    matches!(
+        err,
+        rig::completion::PromptError::CompletionError(rig::completion::CompletionError::ResponseError(msg))
+            if msg.contains("Response contained no message or tool call")
+    )
 }

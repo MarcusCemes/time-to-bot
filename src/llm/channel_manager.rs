@@ -104,6 +104,17 @@ impl ChannelState {
         );
     }
 
+    /// Content of the most recent bot message in history, if any. Used to
+    /// suppress the model repeating its own last line (smoke test 2026-08-07 —
+    /// the bot sometimes re-sends the same content across turns).
+    pub fn last_bot_message(&self) -> Option<String> {
+        self.history
+            .iter()
+            .rev()
+            .find(|e| e.author == "Bot")
+            .map(|e| e.content.clone())
+    }
+
     /// Drop oldest 1–5 entries when over the cap; prune the seq map (GLM MINOR #8).
     fn evict(&mut self) {
         while self.history.len() > MAX_HISTORY {
