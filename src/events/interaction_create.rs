@@ -180,39 +180,59 @@ async fn summon(ctx: &Context, command: &CommandInteraction) {
 
     let channel_id = command.channel_id;
 
-    // Backfill transcript from Discord if history is empty (Kimi #8 — mention
-    // and summon are symmetric: both get the last 15 min of context).
-    {
+    // Ack the interaction FIRST (Kimi round-4 #7): the backfill HTTP call below
+    // can exceed the 3-second interaction deadline on a busy bot, which would
+    // make create_response fail with Unknown Interaction.
+    respond_to_interaction(ctx, command, "You rang?").await;
+
+    // Fetch the backfill messages BEFORE taking the state lock (Kimi round-4
+    // #6): holding the Mutex across the HTTP await would stall every
+    // message_create for this channel behind the network call.
+    let backfill: Option<Vec<serenity::all::Message>> = {
         let state_arc = manager.get_or_create(channel_id).await;
-        let mut state = state_arc.lock().await;
+        let state = state_arc.lock().await;
         if state.history.is_empty() {
-            // Fetch last 50 messages (15 min at typical pace) and push them
-            // oldest→newest so seq order matches.
-            if let Ok(messages) = channel_id
+            drop(state);
+            // Fetch last 50 messages (15 min at typical pace).
+            match channel_id
                 .messages(&ctx.http, GetMessages::new().limit(50))
                 .await
             {
-                for message in messages.iter().rev() {
-                    if message.author.bot {
-                        continue;
-                    }
-                    state.push_message(HistoryEntry {
+                Ok(messages) => Some(messages),
+                Err(e) => {
+                    warn!("failed to backfill transcript for {channel_id}: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    // Now lock once and push the backfill + set interest/summoned.
+    {
+        let state_arc = manager.get_or_create(channel_id).await;
+        let mut state = state_arc.lock().await;
+        if let Some(messages) = backfill {
+            for message in messages.iter().rev() {
+                if message.author.bot {
+                    continue;
+                }
+                state.push_message(
+                    HistoryEntry {
                         seq: 0, // assigned by push_message
                         author: message.author.name.clone(),
                         content: message.content.clone(),
                         message_id: message.id,
-                    });
-                }
-            } else {
-                warn!("failed to backfill transcript for {channel_id}");
+                    },
+                    false, // user-authored (backfill)
+                );
             }
         }
         // Set interest + summoned flag.
         state.interest(manager.interest_timeout());
         state.summoned = true;
     }
-
-    respond_to_interaction(ctx, command, "You rang?").await;
 
     // Trigger the LLM turn (single-flight) so the bot speaks.
     turn::trigger_turn(ctx, manager, channel_id).await;

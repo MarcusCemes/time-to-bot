@@ -20,10 +20,13 @@ pub async fn ready_handler(ctx: Context, ready: Ready) {
 
 #[cfg(debug_assertions)]
 async fn register_commands(ctx: &Context) {
-    if COMMANDS_REGISTERED.swap(true, Ordering::SeqCst) {
+    // Only register once per process (Kimi #28). The flag is set AFTER a
+    // successful registration so a transient failure can retry on resume
+    // (Kimi round-4 #14 — previously set before, panicking with no retry).
+    if COMMANDS_REGISTERED.load(Ordering::SeqCst) {
         return; // already registered (resume)
     }
-    GuildId::new(DEV_GUILD_ID)
+    let result = GuildId::new(DEV_GUILD_ID)
         .set_commands(
             &ctx.http,
             vec![
@@ -34,18 +37,21 @@ async fn register_commands(ctx: &Context) {
                 status_command(),
             ],
         )
-        .await
-        .expect("Unable to register dev guild commands");
-
+        .await;
+    if let Err(e) = result {
+        error!("Failed to register dev guild commands: {e}");
+        return; // flag NOT set — a later resume retries
+    }
+    COMMANDS_REGISTERED.store(true, Ordering::SeqCst);
     info!("Development guild commands registered");
 }
 
 #[cfg(not(debug_assertions))]
 async fn register_commands(ctx: &Context) {
-    if COMMANDS_REGISTERED.swap(true, Ordering::SeqCst) {
+    if COMMANDS_REGISTERED.load(Ordering::SeqCst) {
         return; // already registered (resume)
     }
-    serenity::all::Command::set_global_commands(
+    let result = serenity::all::Command::set_global_commands(
         &ctx.http,
         vec![
             gather_command(),
@@ -55,9 +61,12 @@ async fn register_commands(ctx: &Context) {
             status_command(),
         ],
     )
-    .await
-    .expect("Unable to register global commands");
-
+    .await;
+    if let Err(e) = result {
+        error!("Failed to register global commands: {e}");
+        return; // flag NOT set — a later resume retries
+    }
+    COMMANDS_REGISTERED.store(true, Ordering::SeqCst);
     info!("Global commands registered");
 }
 

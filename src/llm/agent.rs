@@ -14,9 +14,14 @@ use crate::llm::prompt::SYSTEM_PROMPT;
 use crate::llm::tools::{ActionSender, React, SendMessage, SeqSnapshot};
 
 /// The LLM agent for one channel's conversation.
+#[derive(Clone)]
 pub struct LlmAgent {
     client: openrouter::Client,
     model: String,
+}
+
+impl serenity::prelude::TypeMapKey for LlmAgent {
+    type Value = LlmAgent;
 }
 
 impl LlmAgent {
@@ -43,6 +48,8 @@ impl LlmAgent {
     /// loop; the caller drains the receiver side (executor owns the queue).
     ///
     /// Retries transient failures (429/5xx) with exponential backoff (Kimi #24).
+    /// On each retry the caller drains any actions the failed attempt already
+    /// enqueued, so a retry can't duplicate tool effects (Kimi round-4 #8).
     pub async fn turn(
         &self,
         prompt: &str,
@@ -67,14 +74,17 @@ impl LlmAgent {
         // it's just config assembly around the shared `&agent`.
         let delays_ms = [200, 1000, 3000];
         let mut last_err = None;
-        for delay in delays_ms {
+        for (i, delay) in delays_ms.iter().enumerate() {
             let runner = rig::agent::AgentRunner::from_agent(&agent, prompt)
                 .tool_context(context.clone());
             match runner.run().await {
                 Ok(_response) => return Ok(()),
                 Err(e) => {
                     last_err = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    // Don't sleep after the FINAL attempt (Kimi round-4 #8).
+                    if i + 1 < delays_ms.len() {
+                        tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+                    }
                 }
             }
         }

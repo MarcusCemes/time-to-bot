@@ -27,7 +27,7 @@ impl Config {
             openrouter_api_key,
             openrouter_base_url: std::env::var("OPENROUTER_BASE_URL").ok(),
             model,
-            interest_timeout: std::time::Duration::from_secs(interest_minutes * 60),
+            interest_timeout: std::time::Duration::from_secs(interest_minutes.saturating_mul(60)),
         }
     }
 }

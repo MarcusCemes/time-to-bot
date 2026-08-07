@@ -6,6 +6,7 @@ use serenity::client::Client;
 use tracing::log::*;
 
 use crate::config::Config;
+use crate::llm::agent::LlmAgent;
 use crate::llm::channel_manager::ChannelManager;
 
 mod config;
@@ -27,10 +28,12 @@ async fn main() {
 
     let config = Config::from_env();
     let channel_manager = ChannelManager::new(config.interest_timeout);
+    let llm_agent = LlmAgent::new(&config);
 
     let mut client = Client::builder(&token, intents)
         .event_handler(events::Handler)
         .type_map_insert::<ChannelManager>(channel_manager)
+        .type_map_insert::<LlmAgent>(llm_agent)
         .await
         .expect("Error while creating client");
 

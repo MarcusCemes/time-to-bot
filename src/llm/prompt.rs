@@ -35,6 +35,6 @@ pub fn format_history_line(seq: u64, author: &str, content: &str) -> String {
         .chars()
         .take(MAX_LINE_CONTENT)
         .collect::<String>()
-        .replace('\n', " ⏎ ");
+        .replace(['\n', '\r'], " ⏎ ");
     format!("#{seq} {author}: {content}")
 }

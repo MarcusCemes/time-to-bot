@@ -39,7 +39,7 @@ pub async fn execute_output(
     channel: ChannelId,
     manager: &ChannelManager,
     generation: u64,
-) -> Result<(), serenity::Error> {
+) {
     // Drain the queue first (single-flight: executor owns the send).
     let queue = {
         let state_arc = manager.get_or_create(channel).await;
@@ -48,21 +48,15 @@ pub async fn execute_output(
     };
 
     for item in queue {
-        // Bail if the channel was reset mid-turn (Kimi #15): generation epoch
-        // changed, so this turn's output is stale.
-        let current_generation = {
-            let state_arc = manager.get_or_create(channel).await;
-            let state = state_arc.lock().await;
-            state.generation
-        };
-        if current_generation != generation {
-            debug!("generation changed, aborting stale burst for {channel}");
-            break;
-        }
-
         // Handle reactions first (no content, short delay).
         if let Some((message_id, reaction_type)) = item.reaction {
             tokio::time::sleep(std::time::Duration::from_millis(item.delay_ms)).await;
+            // Re-check generation AFTER the delay (Kimi round-4 #5): a /reset
+            // during the sleep must abort the stale reaction.
+            if !generation_current(manager, channel, generation).await {
+                debug!("generation changed, aborting stale burst for {channel}");
+                break;
+            }
             if let Err(e) = channel
                 .create_reaction(http, message_id, reaction_type)
                 .await
@@ -76,8 +70,20 @@ pub async fn execute_output(
         let _typing_guard = TypingGuard::new(channel.start_typing(http));
         tokio::time::sleep(std::time::Duration::from_millis(item.delay_ms)).await;
 
+        // Re-check generation AFTER the typing delay (Kimi round-4 #5): a /reset
+        // during the sleep must abort the stale send.
+        if !generation_current(manager, channel, generation).await {
+            debug!("generation changed, aborting stale burst for {channel}");
+            break;
+        }
+
         match channel
-            .send_message(http, CreateMessage::new().content(&item.content).allowed_mentions(CreateAllowedMentions::new()))
+            .send_message(
+                http,
+                CreateMessage::new()
+                    .content(&item.content)
+                    .allowed_mentions(CreateAllowedMentions::new()),
+            )
             .await
         {
             Ok(message) => {
@@ -90,5 +96,16 @@ pub async fn execute_output(
             Err(e) => warn!("send failed: {e}"),
         }
     }
-    Ok(())
+}
+
+/// Whether the channel's generation epoch still matches the turn's. If a
+/// `/reset` bumped it, this turn's output is stale.
+async fn generation_current(
+    manager: &ChannelManager,
+    channel: ChannelId,
+    generation: u64,
+) -> bool {
+    let state_arc = manager.get_or_create(channel).await;
+    let state = state_arc.lock().await;
+    state.generation == generation
 }

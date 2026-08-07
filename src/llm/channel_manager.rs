@@ -34,6 +34,10 @@ pub struct ChannelState {
     pub interested_until: Option<Instant>,
     pub history: VecDeque<HistoryEntry>,
     pub next_seq: u64,
+    /// Highest seq contributed by a USER message (not bot output). Continuation
+    /// uses this to detect "history grew" without counting the bot's own
+    /// replies (Kimi round-4 #2 — prevents self-sustaining reply loop).
+    pub last_external_seq: u64,
     pub seq_to_msg: HashMap<u64, MessageId>,
     pub send_queue: VecDeque<QueuedMessage>,
     pub generation_in_flight: bool,
@@ -50,6 +54,7 @@ impl ChannelState {
             interested_until: None,
             history: VecDeque::new(),
             next_seq: 1,
+            last_external_seq: 0,
             seq_to_msg: HashMap::new(),
             send_queue: VecDeque::new(),
             generation_in_flight: false,
@@ -69,11 +74,16 @@ impl ChannelState {
     }
 
     /// Append a message to history (always — the deque is the bot's memory).
-    pub fn push_message(&mut self, entry: HistoryEntry) {
+    /// `is_bot` marks the bot's own output so continuation can distinguish
+    /// user-authored growth (Kimi round-4 #2).
+    pub fn push_message(&mut self, entry: HistoryEntry, is_bot: bool) {
         let seq = self.next_seq;
         self.next_seq += 1;
         let mut entry = entry;
         entry.seq = seq;
+        if !is_bot {
+            self.last_external_seq = seq;
+        }
         self.seq_to_msg.insert(seq, entry.message_id);
         self.history.push_back(entry);
         self.evict();
@@ -83,12 +93,15 @@ impl ChannelState {
     /// serenity, so the LLM must see its own output — GLM BLOCKER #2). Takes the
     /// real message id so reactions to bot lines resolve (Kimi #17).
     pub fn push_bot_message(&mut self, content: &str, message_id: MessageId) {
-        self.push_message(HistoryEntry {
-            seq: 0, // overwritten by push_message
-            author: "Bot".to_string(),
-            content: content.to_string(),
-            message_id,
-        });
+        self.push_message(
+            HistoryEntry {
+                seq: 0, // overwritten by push_message
+                author: "Bot".to_string(),
+                content: content.to_string(),
+                message_id,
+            },
+            true,
+        );
     }
 
     /// Drop oldest 1–5 entries when over the cap; prune the seq map (GLM MINOR #8).
@@ -101,14 +114,18 @@ impl ChannelState {
     }
 
     /// Clear context (for `/reset`). Bumps the generation epoch so any in-flight
-    /// turn aborts its send loop (Kimi #15); resets `summoned` (Kimi #14).
+    /// turn aborts its send loop (Kimi #15); resets `summoned` (Kimi #14) and
+    /// clears `generation_in_flight` so `/reset` can't wedge a channel (Kimi
+    /// round-4 #1).
     pub fn clear_context(&mut self) {
         self.history.clear();
         self.seq_to_msg.clear();
         self.send_queue.clear();
         self.next_seq = 1;
+        self.last_external_seq = 0;
         self.interested_until = None;
         self.generation += 1;
+        self.generation_in_flight = false;
         self.summoned = false;
     }
 
@@ -149,11 +166,6 @@ impl ChannelState {
     /// Drain the send queue.
     pub fn drain_queue(&mut self) -> Vec<QueuedMessage> {
         self.send_queue.drain(..).collect()
-    }
-
-    /// Build a snapshot of the seq→MessageId map for tool injection.
-    pub fn seq_snapshot(&self) -> HashMap<u64, MessageId> {
-        self.seq_to_msg.clone()
     }
 }
 

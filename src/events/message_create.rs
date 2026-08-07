@@ -43,12 +43,15 @@ pub async fn handle_message_create(ctx: Context, new_message: Message) {
     let interested = {
         let state_arc = manager.get_or_create(channel_id).await;
         let mut state = state_arc.lock().await;
-        state.push_message(HistoryEntry {
-            seq: 0, // assigned by push_message
-            author,
-            content: content.clone(),
-            message_id,
-        });
+        state.push_message(
+            HistoryEntry {
+                seq: 0, // assigned by push_message
+                author,
+                content: content.clone(),
+                message_id,
+            },
+            false, // user-authored
+        );
         // 2. Enter/refresh interest: a mention wakes the bot; any message while
         //    already interested extends the window (keeps it awake in an active convo).
         if mentioned || state.is_interested() {
