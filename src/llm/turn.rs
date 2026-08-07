@@ -83,25 +83,15 @@ async fn spawn_turn(http: Arc<Http>, manager: ChannelManager, channel_id: Channe
         }
     }
 
-    // `run_turn` (→ llm_turn → rig agent) has a non-Send future — the rig
-    // agent's future isn't Send on this stack. tokio::spawn requires Send, so
-    // run the whole turn on a dedicated single-thread runtime via
-    // spawn_blocking + block_on. This keeps the non-Send future on one thread
-    // and never crosses the tokio::spawn Send boundary.
-    let http = http.clone();
-    let manager = manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to build turn runtime");
-        rt.block_on(run_turn(http, manager, channel_id));
-    });
+    // Plain tokio::spawn — the future is Send (probe-verified; the earlier
+    // non-Send was a recursive opaque-type artifact, see spawn_continuation).
+    let turn_future = run_turn(http, manager, channel_id);
+    tokio::spawn(turn_future);
 }
 
-/// The actual turn body: guard + llm_turn + continuation. Separated so its
-/// (non-Send) future can run inside a dedicated current-thread runtime via
-/// `spawn_blocking` + `block_on` (see `spawn_turn`).
+/// The actual turn body: guard + llm_turn + continuation. Spawned directly via
+/// `tokio::spawn` (the future is Send); the continuation is spawned via the
+/// separate `spawn_continuation` fn to keep opaque types finite.
 async fn run_turn(http: Arc<Http>, manager: ChannelManager, channel_id: ChannelId) {
     // InFlightGuard clears the flag on drop (panic-safe) and marks in-flight
     // for the duration of the turn.
@@ -130,18 +120,16 @@ async fn run_turn(http: Arc<Http>, manager: ChannelManager, channel_id: ChannelI
         state.is_interested() && state.next_seq > snapshot_seq
     };
     if history_grew {
-        // Spawn a fresh continuation turn on a dedicated runtime — same
-        // spawn_blocking pattern as spawn_turn (non-Send future).
-        let http = http.clone();
-        let manager = manager.clone();
-        tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to build continuation runtime");
-            rt.block_on(run_turn(http, manager, channel_id));
-        });
+        spawn_continuation(http.clone(), manager.clone(), channel_id);
     }
+}
+
+/// Fire-and-forget a continuation turn. Separate async fn so its opaque type
+/// doesn't recurse into `run_turn` (which would make the type infinite).
+fn spawn_continuation(http: Arc<Http>, manager: ChannelManager, channel_id: ChannelId) {
+    tokio::task::spawn(async move {
+        run_turn(http, manager, channel_id).await;
+    });
 }
 
 /// Run one full LLM turn: build history, call the agent, drain actions to the
