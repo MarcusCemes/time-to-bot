@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Edit persona.md on the host; it is re-read each time the bot wakes.
+      - ./config:/app/config:ro
